@@ -41,7 +41,7 @@ if (!verbose) return ;
 time_t now;
 time(&now);
 switch (mode) {
-  case 0: // setup
+  case -1: // setup
         size = len;
         started = reported = now;
         break;
@@ -51,7 +51,7 @@ switch (mode) {
         done = size-len;
         if (done >0 && reported !=now) {
         printf("Bytes: %d (%d%c),  Time: %d, ETA: %d   \r",done,
-                           (done*100)/size, '%', dur, (int) ( (1.0*dur*size)/done-dur));
+                           (done*100)/size, '%', dur, (int) ( (dur*size*1.0)/done-dur));
                 fflush(stdout);
                 reported = now;
                 }
@@ -67,6 +67,7 @@ switch (mode) {
 
 int main(int argc, char* argv[])
 {
+    int res = 0;
     int32_t ret;
     uint8_t *buf;
     FILE *fp;
@@ -81,9 +82,9 @@ int main(int argc, char* argv[])
         "\nUsage:\n"\
         " -h, --help             display this message\n"\
         " -i, --info             read the chip ID info\n"\
-        " -e, --erase            erase the entire chip\n"\
         " -v, --verbose          print verbose info\n"\
         " -l, --length <bytes>   manually set length\n"\
+        " -e, --erase            erase chip to 0xff\n"\
         " -w, --write <filename> write chip with data from filename\n"\
         " -r, --read <filename>  read chip and save data to filename\n"\
         " -t, --turbo            increase the i2c bus speed (-tt to use much faster speed)\n"\
@@ -152,34 +153,33 @@ int main(int argc, char* argv[])
         return -1;
     ret = ch341SetStream(speed);
     if (ret < 0) goto out;
-    ret = ch341SpiCapacity();
+    ret = ch341ReadStatus();
     if (ret < 0) goto out;
-    cap = 1 << ret;
+    printf("Chip status: 0x%02x\n", ret);
+    
+    
+    /*ret = ch341WriteEnable();
+    if (ret < 0) goto out;
+    
+    
+    ret = ch341ReadStatus();
+    if (ret < 0) goto out;
+    printf("Chip status: 0x%02x\n", ret);*/
+    
+    
+    
+    /*ret = ch341SpiCapacity();
+    if (ret < 0) goto out;
+    cap = 1 << ret;*/
+    cap=4096;
     printf("Chip capacity is %d bytes\n", cap);
 
     if (length != 0){
         cap = length;
     }
     if (op == 'i') goto out;
-    if (op == 'e') {
-        uint8_t timeout = 0;
-        ret = ch341EraseChip();
-        if (ret < 0) goto out;
-        do {
-            sleep(1);
-            ret = ch341ReadStatus();
-            if (ret < 0) goto out;
-            printf(".");
-            fflush(stdout);
-            timeout++;
-            if (timeout == 100) break;
-        } while(ret != 0);
-        if (timeout == 100)
-            fprintf(stderr, "Chip erase timeout.\n");
-        else
-            printf("Chip erase done!\n");
-    }
-    if ((op == 'r') || (op == 'w')) {
+    if ((op == 'r') || (op == 'w') || (op == 'e'))
+    {
         buf = (uint8_t *)malloc(cap);
         if (!buf) {
             fprintf(stderr, "Malloc failed for read buffer.\n");
@@ -206,30 +206,30 @@ int main(int argc, char* argv[])
             fprintf(stderr, "Couldn't open file %s for reading.\n", filename);
             goto out;
         }
-        ret = fread(buf, 1, cap, fp);
+        int f_size = fread(buf, 1, cap, fp);
         if (ferror(fp)) {
             fprintf(stderr, "Error reading file [%s]\n", filename);
             if (fp)
                 fclose(fp);
             goto out;
         }
-        fprintf(stderr, "File Size is [%d]\n", ret);
-        ret = ch341SpiWrite(buf, 0, ret);
+        fprintf(stderr, "File Size is [%d]\n", f_size);
+        ret = ch341SpiWrite(buf, 0, f_size);
         if (ret == 0) {
-            printf("\nWrite ok! Try to verify... ");
+            printf("\nWrite ok! Try to verify...\n");
             FILE *test_file;
             char *test_filename;
             test_filename = (char*) malloc(strlen("./test-firmware.bin") + 1);
             strcpy(test_filename, "./test-firmware.bin");
 
-            ret = ch341SpiRead(buf, 0, cap);
+            ret = ch341SpiRead(buf, 0, f_size);
             test_file = fopen(test_filename, "w+b");
 
             if (!test_file) {
                 fprintf(stderr, "Couldn't open file %s for writing.\n", test_filename);
                 goto out;
             }
-            fwrite(buf, 1, cap, test_file);
+            fwrite(buf, 1, f_size, test_file);
 
             if (ferror(test_file))
                 fprintf(stderr, "Error writing file [%s]\n", test_filename);
@@ -248,8 +248,10 @@ int main(int argc, char* argv[])
 
             if (ch1 == ch2)
                 printf("\nWrite completed successfully. \n");
-            else
+            else {
+                res = -1;
                 printf("\nError while writing. Check your device. \n");
+            }
 
             if (remove(test_filename) == 0)
                 printf("\nAll done. \n");
@@ -258,7 +260,36 @@ int main(int argc, char* argv[])
         }
         fclose(fp);
     }
+    if (op == 'e')
+    {
+	// Resetting buffer to 0xff
+	memset(buf, 0xff, cap);
+        fprintf(stderr, "Erase Size is [%d]\n", cap);
+        ret = ch341SpiWrite(buf, 0, cap);
+        if (ret == 0) {
+            printf("\nWrite ok! Try to verify...\n");
+
+            ret = ch341SpiRead(buf, 0, cap);
+            int ok=0;
+            if (ret == 0)
+            {
+        	int i;
+        	ok=1;
+        	for (i=0; i<cap; i++)
+        	    if (buf[i] != 0xff)
+        	    {
+        		ok=0;
+        		break;
+        	    }
+	    }
+	    
+            if (ok)
+                printf("\nErase completed successfully. \n");
+            else
+                printf("\nError while erasing. Check your device. \n");
+        }
+    }
 out:
     ch341Release();
-    return 0;
+    return res;
 }
